@@ -1,0 +1,163 @@
+version: "3.8"
+
+services:
+  # =========================================
+  # 核心业务服务
+  # =========================================
+  app: # Space App
+    build: ../space-demo
+    image: space-demo:latest
+    container_name: space-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      star: # 依赖 star 启动，确保 space 能调通
+        condition: service_started
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      # 内部通信地址
+      DB_HOST: postgres
+      REDIS_HOST: redis
+      KAFKA_BROKERS: kafka:29092
+      # Space 调用 Star 的地址 (直接用服务名)
+      STAR_SERVICE_URL: "http://star:8081" 
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8000/health"]
+      interval: 10s
+      retries: 3
+
+  star: # Star Service
+    # 假设 star 代码在 ../star 目录，或者你需要拉取镜像
+    build: ../star # <-- 如果是本地编译
+    image: star:latest # <-- 或者是你的镜像地址
+    container_name: star-service
+    restart: unless-stopped
+    command: ["-config", "config.test"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8081:8081"
+    # Linux 服务器上访问宿主机 IP (例如连接宿主机的 Bitcoin 节点)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file: .env
+    environment:
+      # 共享 Space 的数据库实例（使用 .env 中的值，如果没有则使用默认值）
+      - STAR_DATABASE_HOST=${STAR_DATABASE_HOST:-postgres}
+      - STAR_DATABASE_PORT=${STAR_DATABASE_PORT:-5432}
+      - STAR_DATABASE_USER=${STAR_DATABASE_USER:-star}
+      - STAR_DATABASE_PASSWORD=${STAR_DATABASE_PASSWORD}
+      - STAR_DATABASE_DBNAME=${STAR_DATABASE_DBNAME:-star}
+      # Kafka 配置（使用 .env 中的值，但 config.test.yaml 中会覆盖 group_id）
+      - STAR_KAFKA_BROKERS=${STAR_KAFKA_BROKERS:-kafka:29092}
+      # 注意：STAR_KAFKA_GROUP_ID 不设置，让 config.test.yaml 中的值生效
+      # 区块链节点配置 (注意：如果节点在宿主机，Linux需配合 extra_hosts)
+      - STAR_BLOCKCHAIN_MODE=${STAR_BLOCKCHAIN_MODE:-rpc}
+      - STAR_BLOCKCHAIN_RPC_URL=${STAR_BLOCKCHAIN_RPC_URL:-http://host.docker.internal:8332}
+      - STAR_BLOCKCHAIN_RPC_USER=${STAR_BLOCKCHAIN_RPC_USER}
+      - STAR_BLOCKCHAIN_RPC_PASSWORD=${STAR_BLOCKCHAIN_RPC_PASSWORD}
+      # ZMQ 配置
+      - STAR_ZMQ_ENDPOINT=${STAR_ZMQ_ENDPOINT:-tcp://host.docker.internal:28332}
+      # HTTP 配置
+      - STAR_HTTP_ENABLED=${STAR_HTTP_ENABLED:-true}
+      - STAR_HTTP_PORT=${STAR_HTTP_PORT:-8081}
+      # App 配置：不设置这些变量，让 config.test.yaml 中的值生效
+      # - STAR_APP_NAME=${STAR_APP_NAME:-star}
+      # - STAR_APP_ENV=${STAR_APP_ENV:-production}
+      # - STAR_APP_LOG_LEVEL=${STAR_APP_LOG_LEVEL:-info}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 30s
+      retries: 3
+
+  # =========================================
+  # 基础设施 (共享)
+  # =========================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: space-postgres
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_USER: ${DB_USER:-space}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      # 这里只指定了默认 DB，另一个 star DB 需要通过 init.sql 创建
+      POSTGRES_DB: ${DB_NAME:-space}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # 挂载初始化脚本，用于创建多个数据库
+      - ./scripts/init_multi_db.sql:/docker-entrypoint-initdb.d/init_multi_db.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-space}"]
+      interval: 10s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: space-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      retries: 5
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: space-kafka
+    restart: unless-stopped
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM1Tk
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
+      # 外部访问用 9092，内部服务(Space/Star)互联用 29092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,PLAINTEXT_INTERNAL://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_INTERNAL://kafka:29092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      retries: 5
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: space-kafka-ui
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+
+volumes:
+  postgres_data:
+  redis_data:
+  kafka_data:
