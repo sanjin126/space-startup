@@ -12,3 +12,7 @@ kafka-topics:
 
 pwd:
 	ls ../star/migrations
+up:
+        docker compose up -d
+build:
+        docker compose build
