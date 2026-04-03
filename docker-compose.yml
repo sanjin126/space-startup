@@ -171,6 +171,7 @@ services:
 
 networks:
   app-net:
+    external: true
 
 volumes:
   postgres_data:
