@@ -5,7 +5,7 @@ services:
   # 核心业务服务
   # =========================================
   app: # Space App
-    build: ../space-demo
+    build: ${SPACE_PATH:-../space-demo}
     image: space-demo:latest
     container_name: space-app
     restart: unless-stopped
