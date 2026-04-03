@@ -108,6 +108,8 @@ services:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-space}"]
       interval: 10s
       retries: 5
+    networks:
+      - app-net
 
   redis:
     image: redis:7-alpine
@@ -121,6 +123,8 @@ services:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       retries: 5
+    networks:
+      - app-net
 
   kafka:
     image: confluentinc/cp-kafka:7.5.0
@@ -147,6 +151,8 @@ services:
       test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
       interval: 10s
       retries: 5
+    networks:
+      - app-net
 
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
@@ -160,6 +166,8 @@ services:
     environment:
       KAFKA_CLUSTERS_0_NAME: local
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+    networks:
+      - app-net
 
 networks:
   app-net:
